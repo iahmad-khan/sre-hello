@@ -1,5 +1,7 @@
 # SRE Hello World
 
+![Architecture](architecture.png)
+
 A production-grade demo of SRE fundamentals — **SLIs, SLOs, error budgets, and multi-burn-rate alerting** — built with Python/FastAPI, Redis, and Prometheus.
 
 - **Backend** — FastAPI, exposes `/metrics` (Prometheus), full Redis CRUD, SLO simulation endpoints

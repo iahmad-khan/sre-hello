@@ -1,0 +1,144 @@
+groups:
+
+  # ── Recording rules ─────────────────────────────────────────────────────────
+  # Pre-compute frequently-queried SLI signals so dashboard queries are fast
+  # and alert expressions stay readable.
+  - name: sre-hello-world.recording
+    interval: 30s
+    rules:
+
+      - record: job:http_requests:rate5m
+        expr: |
+          sum(rate(http_requests_total[5m])) by (job)
+
+      - record: job:http_errors:rate5m
+        expr: |
+          sum(rate(http_requests_total{status_code=~"[45].."}[5m])) by (job)
+
+      - record: job:http_error_ratio:rate5m
+        expr: |
+          job:http_errors:rate5m / job:http_requests:rate5m
+
+      - record: job:http_availability:rate5m
+        expr: |
+          1 - job:http_error_ratio:rate5m
+
+      - record: job:http_request_duration_p95:rate5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+          )
+
+      - record: job:http_request_duration_p99:rate5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+          )
+
+      - record: job:http_throughput:rate5m
+        expr: |
+          sum(rate(http_requests_total[5m])) by (job)
+
+  # ── SLO alert rules ─────────────────────────────────────────────────────────
+  # Multi-window multi-burn-rate strategy (SRE Workbook Chapter 5).
+  # SLO: 99.9% availability  →  error budget = 0.1%
+  - name: sre-hello-world.slo.availability
+    rules:
+
+      # Fast burn: consuming error budget at 14.4× for >1 h  →  page on-call
+      # 14.4× × 1 h = 14.4 h of budget burned out of 720 h/month (2%)
+      - alert: AvailabilitySLOFastBurn
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code=~"5.."}[1h]))
+            / sum(rate(http_requests_total[1h]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Availability SLO fast burn ({{ $value | humanizePercentage }} error ratio)"
+          description: >
+            Error ratio {{ $value | humanizePercentage }} is burning the monthly error budget
+            at 14.4x over the last 1 h window. SLO target: 99.9%.
+            Immediate action required.
+
+      # Slow burn: consuming budget at 1× sustained for >6 h  →  file a ticket
+      - alert: AvailabilitySLOSlowBurn
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code=~"5.."}[6h]))
+            / sum(rate(http_requests_total[6h]))
+          ) > (1 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Availability SLO slow burn ({{ $value | humanizePercentage }} error ratio)"
+          description: >
+            Error ratio {{ $value | humanizePercentage }} has been above SLO threshold
+            for >15 min in the 6 h window. File a ticket and investigate.
+
+  # ── Latency SLO alert rules ──────────────────────────────────────────────────
+  - name: sre-hello-world.slo.latency
+    rules:
+
+      - alert: LatencyP95SLOBreach
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "P95 latency SLO breach ({{ $value | humanizeDuration }})"
+          description: >
+            P95 request latency is {{ $value | humanizeDuration }},
+            exceeding the 200 ms target for >5 min.
+
+      - alert: LatencyP99SLOBreach
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "P99 latency SLO breach ({{ $value | humanizeDuration }})"
+          description: >
+            P99 request latency is {{ $value | humanizeDuration }},
+            exceeding the 500 ms target for >5 min.
+
+  # ── Redis health alerts ──────────────────────────────────────────────────────
+  - name: sre-hello-world.redis
+    rules:
+
+      - alert: RedisHighErrorRate
+        expr: |
+          (
+            sum(rate(redis_operations_total{status="error"}[5m]))
+            / sum(rate(redis_operations_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis error rate above 5%"
+          description: >
+            {{ $value | humanizePercentage }} of Redis operations are failing.
+            Check Redis connectivity.
+
+      - alert: BackendDown
+        expr: up{job="sre-hello-world-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend scrape target is DOWN"
+          description: "Prometheus cannot reach the backend /metrics endpoint."

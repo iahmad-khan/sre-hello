@@ -2,6 +2,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Load rule files for local dev.
+# In Kubernetes these same rules are deployed as a PrometheusRule CRD
+# (helm/sre-hello-world/templates/prometheusrule.yaml) and picked up
+# by the Prometheus Operator automatically.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
 scrape_configs:
   - job_name: sre-hello-world-backend
     static_configs:
