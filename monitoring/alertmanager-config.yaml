@@ -1,0 +1,161 @@
+# AlertmanagerConfig CRD (monitoring.coreos.com/v1alpha1)
+#
+# Routing strategy:
+#   ALL alerts    → Slack #prod-alerts  (async, full context for analysis)
+#   critical      → PagerDuty           (active on-call paging)  +  Slack
+#   warning       → Slack only
+#
+# Before applying:
+#   1. Create the credentials secret (see monitoring/alertmanager-secret.yaml)
+#   2. kubectl apply -f monitoring/alertmanager-config.yaml -n sre-demo
+#
+# Verify the merged config:
+#   kubectl port-forward svc/kube-prometheus-stack-alertmanager 9093:9093 -n monitoring
+#   curl http://localhost:9093/api/v1/status | jq .data.configJSON
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: sre-hello-world
+  namespace: sre-demo
+  labels:
+    app.kubernetes.io/name: sre-hello-world
+    app.kubernetes.io/component: alerting
+spec:
+  route:
+    groupBy: ['alertname', 'slo', 'severity']
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    # Default: every alert goes to Slack #prod-alerts
+    receiver: slack-prod-alerts
+
+    routes:
+      # Critical SLO alerts → PagerDuty (pages on-call) + Slack
+      - matchers:
+          - name: severity
+            value: critical
+            matchType: "="
+        receiver: critical-pagerduty-and-slack
+        groupWait: 0s           # page immediately, no batching delay
+        repeatInterval: 1h      # re-page every hour if still firing
+
+      # Warning SLO alerts → Slack only, slower cadence
+      - matchers:
+          - name: severity
+            value: warning
+            matchType: "="
+        receiver: slack-prod-alerts
+        groupWait: 5m
+        repeatInterval: 12h
+
+  receivers:
+
+    # ── All alerts: Slack #prod-alerts ────────────────────────────────────────
+    - name: slack-prod-alerts
+      slackConfigs:
+        - apiURL:
+            # kubectl create secret generic alertmanager-slack-secret \
+            #   --from-literal=webhook-url='https://hooks.slack.com/services/XXX/YYY/ZZZ' \
+            #   -n sre-demo
+            name: alertmanager-slack-secret
+            key: webhook-url
+          channel: "#prod-alerts"
+          sendResolved: true
+          iconEmoji: "{{ if eq .Status \"firing\" }}:fire:{{ else }}:white_check_mark:{{ end }}"
+          username: "Alertmanager | sre-hello-world"
+          # ── Title bar ──
+          title: |-
+            {{ if eq .Status "firing" -}}
+              :red_circle: [{{ .CommonLabels.severity | toUpper }}] {{ .CommonAnnotations.summary }}
+            {{- else -}}
+              :large_green_circle: [RESOLVED] {{ .CommonAnnotations.summary }}
+            {{- end }}
+          # ── Body: rich alert context for async analysis ──
+          text: |-
+            *Alert:* {{ .CommonAnnotations.summary }}
+            *Description:* {{ .CommonAnnotations.description }}
+            *Severity:* `{{ .CommonLabels.severity }}`
+            *SLO:* `{{ .CommonLabels.slo | default "n/a" }}`
+            *Namespace:* `{{ .CommonLabels.namespace | default "sre-demo" }}`
+            *Started:* {{ .Alerts.Firing | len }} firing, {{ .Alerts.Resolved | len }} resolved
+            {{ range .Alerts -}}
+            • *{{ .Labels.alertname }}* — {{ .Annotations.description }}
+              _Labels:_ {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
+            {{ end }}
+          # ── Action buttons ──
+          actions:
+            - type: button
+              text: "View in Prometheus :prometheus:"
+              url: "http://prometheus.monitoring.svc.cluster.local:9090/alerts"
+            - type: button
+              text: "View in Grafana :grafana:"
+              url: "http://grafana.monitoring.svc.cluster.local:3000/d/sre-hello-world-slo"
+
+    # ── Critical: PagerDuty (page) + Slack (notify) ───────────────────────────
+    - name: critical-pagerduty-and-slack
+      pagerdutyConfigs:
+        - routingKey:
+            # kubectl create secret generic alertmanager-pagerduty-secret \
+            #   --from-literal=routing-key='your-pagerduty-events-v2-integration-key' \
+            #   -n sre-demo
+            name: alertmanager-pagerduty-secret
+            key: routing-key
+          # Events API v2 — fires a PagerDuty incident
+          description: "{{ .CommonAnnotations.summary }}"
+          severity: "{{ .CommonLabels.severity }}"
+          # Component / group help PagerDuty route to the right team/service
+          component: sre-hello-world
+          group: "{{ .CommonLabels.slo | default \"application\" }}"
+          class: "{{ .CommonLabels.alertname }}"
+          sendResolved: true
+          details:
+            description:  "{{ .CommonAnnotations.description }}"
+            slo:          "{{ .CommonLabels.slo }}"
+            namespace:    "{{ .CommonLabels.namespace }}"
+            environment:  production
+            runbook_url:  "https://your-wiki/runbooks/sre-hello-world"
+      # Also notify Slack so the team has async context alongside the page
+      slackConfigs:
+        - apiURL:
+            name: alertmanager-slack-secret
+            key: webhook-url
+          channel: "#prod-alerts"
+          sendResolved: true
+          iconEmoji: "{{ if eq .Status \"firing\" }}:pagerduty::rotating_light:{{ else }}:white_check_mark:{{ end }}"
+          username: "Alertmanager | sre-hello-world"
+          title: |-
+            {{ if eq .Status "firing" -}}
+              :rotating_light: [CRITICAL — PAGED] {{ .CommonAnnotations.summary }}
+            {{- else -}}
+              :large_green_circle: [RESOLVED] {{ .CommonAnnotations.summary }}
+            {{- end }}
+          text: |-
+            *PagerDuty incident opened* — on-call has been paged.
+
+            *Alert:* {{ .CommonAnnotations.summary }}
+            *Description:* {{ .CommonAnnotations.description }}
+            *SLO:* `{{ .CommonLabels.slo | default "n/a" }}`
+            *Namespace:* `{{ .CommonLabels.namespace | default "sre-demo" }}`
+            {{ range .Alerts -}}
+            • {{ .Labels.alertname }}: {{ .Annotations.description }}
+            {{ end }}
+          actions:
+            - type: button
+              text: "View in Prometheus :prometheus:"
+              url: "http://prometheus.monitoring.svc.cluster.local:9090/alerts"
+            - type: button
+              text: "View in Grafana :grafana:"
+              url: "http://grafana.monitoring.svc.cluster.local:3000/d/sre-hello-world-slo"
+
+  inhibitRules:
+    # Suppress the matching warning when a critical for the same alert is already firing
+    - sourceMatch:
+        - name: severity
+          value: critical
+          matchType: "="
+      targetMatch:
+        - name: severity
+          value: warning
+          matchType: "="
+      equal: ['alertname']

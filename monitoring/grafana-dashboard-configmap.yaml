@@ -1,0 +1,260 @@
+# Grafana dashboard auto-provisioning ConfigMap.
+# The kube-prometheus-stack Grafana sidecar watches for ConfigMaps labelled
+# `grafana_dashboard: "1"` across all namespaces and hot-loads them.
+#
+# Apply with:
+#   kubectl apply -f monitoring/grafana-dashboard-configmap.yaml -n monitoring
+#
+# The dashboard is visible in Grafana under Dashboards → SRE.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sre-hello-world-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"         # picked up by the Grafana sidecar
+  annotations:
+    grafana_folder: "SRE"          # placed in the SRE folder in Grafana
+data:
+  sre-hello-world.json: |-
+    {
+      "title": "SRE Hello World — SLI/SLO",
+      "uid":   "sre-hello-world-slo",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "tags": ["sre","slo","redis","prometheus"],
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource", "type": "datasource",
+            "label": "Datasource", "query": "prometheus",
+            "hide": 0, "refresh": 1, "current": {}, "options": [], "includeAll": false
+          },
+          {
+            "name": "job", "type": "query", "label": "Job",
+            "datasource": { "type": "prometheus", "uid": "$datasource" },
+            "definition": "label_values(http_requests_total, job)",
+            "query": { "query": "label_values(http_requests_total, job)", "refId": "A" },
+            "hide": 0, "refresh": 2, "sort": 1, "multi": false, "includeAll": true,
+            "current": {}, "options": []
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 100, "type": "row", "title": "SLO Overview",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false
+        },
+        {
+          "id": 1, "type": "stat", "title": "Availability",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "orientation": "auto", "textMode": "auto", "justifyMode": "auto" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent", "min": 99, "max": 100,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null }, { "color": "yellow", "value": 99.5 }, { "color": "green", "value": 99.9 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "Availability",
+            "expr": "(1 - (sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[$__rate_interval])) / sum(rate(http_requests_total{job=~\"$job\"}[$__rate_interval])))) * 100" }]
+        },
+        {
+          "id": 2, "type": "stat", "title": "Error Rate",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "orientation": "auto", "textMode": "auto", "justifyMode": "auto" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent", "min": 0, "max": 5,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.5 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "Error Rate",
+            "expr": "(sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[$__rate_interval])) / sum(rate(http_requests_total{job=~\"$job\"}[$__rate_interval]))) * 100" }]
+        },
+        {
+          "id": 3, "type": "gauge", "title": "P95 Latency (target ≤ 200 ms)",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms", "min": 0, "max": 500,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "yellow", "value": 150 }, { "color": "red", "value": 200 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "P95",
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le)) * 1000" }]
+        },
+        {
+          "id": 4, "type": "gauge", "title": "P99 Latency (target ≤ 500 ms)",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms", "min": 0, "max": 1000,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "yellow", "value": 350 }, { "color": "red", "value": 500 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "P99",
+            "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le)) * 1000" }]
+        },
+        {
+          "id": 5, "type": "gauge", "title": "Error Budget Remaining (30d)",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent", "min": 0, "max": 100,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null }, { "color": "yellow", "value": 50 }, { "color": "green", "value": 80 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "Budget Remaining",
+            "expr": "(1 - (sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[30d])) / sum(rate(http_requests_total{job=~\"$job\"}[30d])))) / 0.999 * 100" }]
+        },
+        {
+          "id": 6, "type": "stat", "title": "Throughput",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "orientation": "auto", "textMode": "auto", "justifyMode": "auto" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "RPS",
+            "expr": "sum(rate(http_requests_total{job=~\"$job\"}[$__rate_interval]))" }]
+        },
+        {
+          "id": 101, "type": "row", "title": "Traffic & Latency",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "collapsed": false
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Request Rate by Status",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+          "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 }, "color": { "mode": "palette-classic" } } },
+          "targets": [
+            { "refId": "A", "legendFormat": "2xx success", "expr": "sum(rate(http_requests_total{job=~\"$job\",status_code=~\"2..\"}[$__rate_interval]))" },
+            { "refId": "B", "legendFormat": "4xx errors",  "expr": "sum(rate(http_requests_total{job=~\"$job\",status_code=~\"4..\"}[$__rate_interval]))" },
+            { "refId": "C", "legendFormat": "5xx errors",  "expr": "sum(rate(http_requests_total{job=~\"$job\",status_code=~\"5..\"}[$__rate_interval]))" }
+          ]
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "Request Latency Percentiles",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+          "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 }, "color": { "mode": "palette-classic" } } },
+          "targets": [
+            { "refId": "A", "legendFormat": "P50", "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le))" },
+            { "refId": "B", "legendFormat": "P95", "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le))" },
+            { "refId": "C", "legendFormat": "P99", "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[$__rate_interval])) by (le))" }
+          ]
+        },
+        {
+          "id": 102, "type": "row", "title": "Error Budget Burn Rate",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "collapsed": false
+        },
+        {
+          "id": 9, "type": "timeseries", "title": "Error Ratio (multi-window)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+          "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "lineWidth": 2 }, "color": { "mode": "continuous-RdYlGr" } } },
+          "targets": [
+            { "refId": "A", "legendFormat": "1h window",  "expr": "sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[1h])) / sum(rate(http_requests_total{job=~\"$job\"}[1h]))" },
+            { "refId": "B", "legendFormat": "6h window",  "expr": "sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[6h])) / sum(rate(http_requests_total{job=~\"$job\"}[6h]))" }
+          ]
+        },
+        {
+          "id": 10, "type": "timeseries", "title": "Burn Rate (× of SLO budget)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+          "fieldConfig": { "defaults": { "unit": "none", "custom": { "lineWidth": 2 }, "color": { "mode": "palette-classic" } } },
+          "targets": [
+            { "refId": "A", "legendFormat": "Fast burn (1h)",  "expr": "(sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[1h])) / sum(rate(http_requests_total{job=~\"$job\"}[1h]))) / 0.001" },
+            { "refId": "B", "legendFormat": "Slow burn (6h)",  "expr": "(sum(rate(http_requests_total{status_code=~\"5..\",job=~\"$job\"}[6h])) / sum(rate(http_requests_total{job=~\"$job\"}[6h]))) / 0.001" },
+            { "refId": "C", "legendFormat": "SLO threshold",   "expr": "vector(1)" }
+          ]
+        },
+        {
+          "id": 103, "type": "row", "title": "Redis",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }, "collapsed": false
+        },
+        {
+          "id": 11, "type": "stat", "title": "Redis Keys",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "orientation": "auto", "textMode": "auto", "justifyMode": "auto" },
+          "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } } },
+          "targets": [{ "refId": "A", "legendFormat": "Keys", "expr": "redis_keys_total" }]
+        },
+        {
+          "id": 12, "type": "gauge", "title": "Cache Hit Rate",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent", "min": 0, "max": 100,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null }, { "color": "yellow", "value": 80 }, { "color": "green", "value": 95 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "Hit Rate",
+            "expr": "rate(redis_operations_total{operation=\"get\",status=\"hit\"}[$__rate_interval]) / rate(redis_operations_total{operation=\"get\"}[$__rate_interval]) * 100" }]
+        },
+        {
+          "id": 13, "type": "gauge", "title": "Redis P99 Latency",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms", "min": 0, "max": 200,
+              "thresholds": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 100 }
+              ] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "refId": "A", "legendFormat": "P99",
+            "expr": "histogram_quantile(0.99, sum(rate(redis_operation_duration_seconds_bucket[$__rate_interval])) by (le)) * 1000" }]
+        },
+        {
+          "id": 14, "type": "timeseries", "title": "Redis Operations / s by Type",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "$datasource" },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+          "fieldConfig": { "defaults": { "unit": "ops", "custom": { "lineWidth": 2 }, "color": { "mode": "palette-classic" } } },
+          "targets": [{ "refId": "A", "legendFormat": "{{ operation }}", "expr": "sum(rate(redis_operations_total[$__rate_interval])) by (operation)" }]
+        }
+      ]
+    }

@@ -1,0 +1,302 @@
+# kube-prometheus-stack Helm values
+# Installs: Prometheus Operator, Prometheus, Alertmanager, Grafana,
+#           node-exporter, kube-state-metrics, and all required CRDs.
+#
+# Deploy:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f monitoring/kube-prometheus-stack-values.yaml \
+#     --version 66.x
+
+# ── Global ────────────────────────────────────────────────────────────────────
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Prometheus Operator ───────────────────────────────────────────────────────
+prometheusOperator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Watch CRDs across ALL namespaces (required for our app's ServiceMonitor
+  # and PrometheusRule deployed in sre-demo namespace)
+  namespaces:
+    releaseNamespace: true
+    additional:
+      - sre-demo
+      - redis
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+prometheus:
+  enabled: true
+
+  # The Prometheus custom resource managed by the operator
+  prometheusSpec:
+    replicas: 1
+    retention: 15d
+    retentionSize: "10GB"
+
+    # ── Selector policies ──
+    # Setting these to {} means "match everything across all namespaces".
+    # This lets our app's ServiceMonitor (in sre-demo) and PrometheusRule
+    # (in monitoring or sre-demo) be picked up automatically.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+    # ── Storage ──
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+          # storageClassName: standard   # set to your storage class
+
+    # ── Resources ──
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    # ── External labels (useful for multi-cluster federation) ──
+    externalLabels:
+      cluster: local
+      environment: production
+
+    # ── Alertmanager integration ──
+    alertingEndpoints:
+      - name: kube-prometheus-stack-alertmanager
+        namespace: monitoring
+        port: http-web
+        scheme: http
+
+  # Service for UI access / port-forward
+  service:
+    type: ClusterIP
+    port: 9090
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+alertmanager:
+  enabled: true
+
+  # Inline Alertmanager config (rendered into a Secret by the operator).
+  # For production, use AlertmanagerConfig CRDs instead (see alertmanager-config.yaml).
+  config:
+    global:
+      resolve_timeout: 5m
+      # smtp_smarthost: 'smtp.example.com:587'
+      # smtp_from: 'alertmanager@example.com'
+
+    route:
+      group_by: ['alertname', 'cluster', 'job', 'slo']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: default
+
+      routes:
+        # Critical SLO alerts → page immediately
+        - matchers:
+            - name: severity
+              value: critical
+          receiver: critical
+          group_wait: 0s
+          repeat_interval: 1h
+
+        # Warning SLO alerts → slower cadence
+        - matchers:
+            - name: severity
+              value: warning
+          receiver: warning
+          group_wait: 5m
+          repeat_interval: 12h
+
+        # SLO-specific routing
+        - matchers:
+            - name: slo
+              value: availability
+          receiver: slo-availability
+
+    receivers:
+      - name: default
+        # Replace with your actual receiver (webhook, Slack, PagerDuty, etc.)
+        # Example Slack webhook (fill in webhook_url):
+        # slack_configs:
+        #   - api_url: 'https://hooks.slack.com/services/...'
+        #     channel: '#alerts'
+        #     title: '{{ template "slack.default.title" . }}'
+        #     text: '{{ template "slack.default.text" . }}'
+
+      - name: critical
+        # pagerduty_configs:
+        #   - routing_key: '<your-pagerduty-integration-key>'
+        #     description: '{{ template "pagerduty.default.description" . }}'
+
+      - name: warning
+        # slack_configs:
+        #   - api_url: 'https://hooks.slack.com/services/...'
+        #     channel: '#sre-warnings'
+
+      - name: slo-availability
+        # webhook_configs:
+        #   - url: 'http://your-incident-tool/webhook'
+
+    inhibit_rules:
+      # Suppress warning if critical is already firing for the same SLO
+      - source_matchers:
+          - name: severity
+            value: critical
+        target_matchers:
+          - name: severity
+            value: warning
+        equal: ['alertname', 'cluster', 'job']
+
+  alertmanagerSpec:
+    replicas: 1
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+  service:
+    type: ClusterIP
+    port: 9093
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+  adminPassword: "changeme"     # override in prod with --set or a secret
+
+  persistence:
+    enabled: true
+    size: 5Gi
+
+  # Sidecar that auto-discovers ConfigMaps/Secrets labelled
+  # `grafana_dashboard: "1"` and loads them as dashboards
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL          # watch all namespaces
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+
+  # Pre-configure Prometheus as default datasource
+  additionalDataSources:
+    - name: Prometheus
+      type: prometheus
+      url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+      access: proxy
+      isDefault: true
+      jsonData:
+        timeInterval: 30s
+
+  grafana.ini:
+    server:
+      domain: grafana.example.com   # update to your hostname
+    analytics:
+      check_for_updates: false
+    security:
+      disable_initial_admin_creation: false
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+# ── kube-state-metrics ────────────────────────────────────────────────────────
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ── node-exporter ─────────────────────────────────────────────────────────────
+prometheus-node-exporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ── Default Prometheus rules (kube system alerts) ─────────────────────────────
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubeProxy: false          # set true if kube-proxy metrics are exposed
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: true
+    kubeSchedulerRecording: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
+    windows: false

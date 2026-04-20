@@ -1,0 +1,13 @@
+apiVersion: v2
+name: sre-hello-world
+description: Python/FastAPI demo app with Redis KV store and Prometheus SLI/SLO metrics
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - sre
+  - prometheus
+  - redis
+  - demo
+maintainers:
+  - name: SRE Team

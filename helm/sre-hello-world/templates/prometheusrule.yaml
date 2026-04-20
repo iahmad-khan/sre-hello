@@ -1,0 +1,143 @@
+{{- if .Values.prometheusRule.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "sre-hello-world.fullname" . }}-slo
+  namespace: {{ .Values.prometheusRule.namespace }}
+  labels:
+    {{- include "sre-hello-world.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+
+    # ── Recording rules (pre-compute SLI signals) ────────────────────────────
+    - name: sre-hello-world.recording
+      interval: 30s
+      rules:
+
+        # 5-minute windowed request rate
+        - record: job:http_requests:rate5m
+          expr: |
+            sum(rate(http_requests_total[5m])) by (job)
+
+        # 5-minute error rate (4xx + 5xx)
+        - record: job:http_errors:rate5m
+          expr: |
+            sum(rate(http_requests_total{status_code=~"[45].."}[5m])) by (job)
+
+        # 5-minute error ratio
+        - record: job:http_error_ratio:rate5m
+          expr: |
+            job:http_errors:rate5m / job:http_requests:rate5m
+
+        # 5-minute availability (success ratio)
+        - record: job:http_availability:rate5m
+          expr: |
+            1 - job:http_error_ratio:rate5m
+
+        # P95 latency
+        - record: job:http_request_duration_p95:rate5m
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+            )
+
+        # P99 latency
+        - record: job:http_request_duration_p99:rate5m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job)
+            )
+
+        # Request throughput (RPS)
+        - record: job:http_throughput:rate5m
+          expr: |
+            sum(rate(http_requests_total[5m])) by (job)
+
+    # ── SLO alert rules (multi-window multi-burn-rate) ───────────────────────
+    # Based on the SRE Workbook Chapter 5 alerting strategy.
+    # Monthly error budget = 1 - SLO target (e.g. 0.1% for 99.9% SLO).
+    # Burn rate × consumption window = fraction of monthly budget burned.
+    #   Fast-burn:  14.4× rate over  1h  → consumes 2% of monthly budget → page
+    #   Slow-burn:  1×    rate over  6h  → consumes 1% of monthly budget → ticket
+    - name: sre-hello-world.slo.availability
+      rules:
+
+        - alert: AvailabilitySLOFastBurn
+          expr: |
+            (
+              job:http_error_ratio:rate5m > (14.4 * (1 - {{ .Values.slo.availability.target }}))
+            )
+          for: 1h
+          labels:
+            severity: critical
+            slo: availability
+          annotations:
+            summary: "Availability SLO fast-burn ({{ .Release.Name }})"
+            description: >
+              Error ratio is {{ "{{" }} $value | humanizePercentage {{ "}}" }} —
+              burning error budget at 14.4× for >1 h.
+              SLO target: {{ .Values.slo.availability.target | float64 | mul 100 }}%.
+
+        - alert: AvailabilitySLOSlowBurn
+          expr: |
+            (
+              job:http_error_ratio:rate5m > (1 * (1 - {{ .Values.slo.availability.target }}))
+            )
+          for: 6h
+          labels:
+            severity: warning
+            slo: availability
+          annotations:
+            summary: "Availability SLO slow-burn ({{ .Release.Name }})"
+            description: >
+              Error ratio is {{ "{{" }} $value | humanizePercentage {{ "}}" }} —
+              sustained burn for >6 h. Review and file ticket.
+
+    - name: sre-hello-world.slo.latency
+      rules:
+
+        - alert: LatencyP95SLOBreach
+          expr: |
+            job:http_request_duration_p95:rate5m > {{ .Values.slo.latency.p95TargetSeconds }}
+          for: 5m
+          labels:
+            severity: warning
+            slo: latency
+          annotations:
+            summary: "P95 latency SLO breach ({{ .Release.Name }})"
+            description: >
+              P95 latency is {{ "{{" }} $value | humanizeDuration {{ "}}" }},
+              exceeding target of {{ .Values.slo.latency.p95TargetSeconds }}s.
+
+        - alert: LatencyP99SLOBreach
+          expr: |
+            job:http_request_duration_p99:rate5m > {{ .Values.slo.latency.p99TargetSeconds }}
+          for: 5m
+          labels:
+            severity: critical
+            slo: latency
+          annotations:
+            summary: "P99 latency SLO breach ({{ .Release.Name }})"
+            description: >
+              P99 latency is {{ "{{" }} $value | humanizeDuration {{ "}}" }},
+              exceeding target of {{ .Values.slo.latency.p99TargetSeconds }}s.
+
+    - name: sre-hello-world.slo.redis
+      rules:
+
+        - alert: RedisHighErrorRate
+          expr: |
+            rate(redis_operations_total{status="error"}[5m])
+              / rate(redis_operations_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis error rate > 5% ({{ .Release.Name }})"
+            description: >
+              {{ "{{" }} $value | humanizePercentage {{ "}}" }} of Redis operations failing.
+              Check Redis connectivity and sentinel failover status.
+{{- end }}

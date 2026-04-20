@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SRE Hello World — Redis KV Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3350;
+      --accent: #6c8ef7;
+      --accent2: #a78bfa;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --radius: 10px;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 32px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.3px; }
+    header h1 span { color: var(--accent); }
+    #status-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-right: 8px;
+      transition: background .3s;
+    }
+    #status-dot.ok    { background: var(--green); }
+    #status-dot.warn  { background: var(--yellow); }
+    #status-dot.error { background: var(--red); }
+    #status-text { font-size: .85rem; color: var(--muted); }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 16px 32px 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .tab-btn {
+      padding: 10px 20px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: .9rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color .2s, border-color .2s;
+    }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-btn:hover:not(.active) { color: var(--text); }
+
+    /* ── Main layout ── */
+    main { padding: 28px 32px; max-width: 1200px; margin: 0 auto; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-size: .95rem; font-weight: 600; color: var(--muted); margin-bottom: 16px; text-transform: uppercase; letter-spacing: .5px; }
+
+    /* ── KV Form ── */
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .form-row input {
+      flex: 1;
+      min-width: 140px;
+      padding: 9px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: .9rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .form-row input:focus { border-color: var(--accent); }
+    .form-row input::placeholder { color: var(--muted); }
+    .form-row input[type=number] { max-width: 100px; }
+
+    button.btn {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: .875rem;
+      font-weight: 600;
+      transition: opacity .2s;
+    }
+    button.btn:hover { opacity: .85; }
+    button.btn-primary { background: var(--accent); color: #fff; }
+    button.btn-danger  { background: var(--red);    color: #fff; }
+    button.btn-muted   { background: var(--surface2); color: var(--muted); }
+    button.btn-sm { padding: 5px 12px; font-size: .8rem; }
+
+    /* ── KV Table ── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    thead th { text-align: left; padding: 10px 14px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
+    tbody tr:hover { background: var(--surface2); }
+    tbody td { padding: 10px 14px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .badge-ttl  { background: #1e3a5f; color: #93c5fd; }
+    .badge-none { background: var(--surface2); color: var(--muted); }
+    .empty-state { text-align: center; color: var(--muted); padding: 40px 0; font-size: .9rem; }
+
+    /* ── SLO Dashboard ── */
+    .slo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+    .slo-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .slo-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .slo-card.ok::before    { background: var(--green); }
+    .slo-card.warn::before  { background: var(--yellow); }
+    .slo-card.error::before { background: var(--red); }
+    .slo-card.loading::before { background: var(--muted); }
+
+    .slo-label { font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 8px; }
+    .slo-value { font-size: 2rem; font-weight: 700; line-height: 1; margin-bottom: 6px; }
+    .slo-card.ok    .slo-value { color: var(--green); }
+    .slo-card.warn  .slo-value { color: var(--yellow); }
+    .slo-card.error .slo-value { color: var(--red); }
+    .slo-card.loading .slo-value { color: var(--muted); }
+    .slo-target { font-size: .8rem; color: var(--muted); }
+    .slo-budget { font-size: .78rem; margin-top: 8px; }
+    .slo-budget span { font-weight: 600; }
+
+    .budget-bar-wrap { margin-top: 10px; }
+    .budget-bar-track { height: 4px; background: var(--border); border-radius: 2px; }
+    .budget-bar-fill  { height: 4px; border-radius: 2px; transition: width .5s; }
+    .budget-bar-fill.ok    { background: var(--green); }
+    .budget-bar-fill.warn  { background: var(--yellow); }
+    .budget-bar-fill.error { background: var(--red); }
+
+    /* Chart */
+    .chart-container { position: relative; height: 220px; }
+
+    /* Simulate panel */
+    .sim-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .sim-row label { font-size: .85rem; color: var(--muted); min-width: 120px; }
+    .sim-row input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+    .sim-row span { font-size: .85rem; font-weight: 600; min-width: 40px; }
+
+    /* ── Stats grid ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+    .stat-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .stat-label { font-size: .75rem; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+
+    /* ── Notifications ── */
+    #toast-container {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 10px;
+      z-index: 100;
+    }
+    .toast {
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: .875rem;
+      font-weight: 500;
+      animation: slideIn .2s ease;
+      max-width: 320px;
+    }
+    .toast.success { background: #134e33; color: var(--green); border: 1px solid #1a6040; }
+    .toast.error   { background: #4c1d1d; color: var(--red);   border: 1px solid #7f1d1d; }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* ── Refresh indicator ── */
+    #refresh-bar {
+      position: fixed; top: 0; left: 0;
+      height: 2px;
+      background: var(--accent);
+      transition: width .3s;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+
+<div id="refresh-bar" style="width:0%"></div>
+<div id="toast-container"></div>
+
+<header>
+  <h1><span>SRE</span> Hello World — Redis KV Demo</h1>
+  <div>
+    <span id="status-dot"></span>
+    <span id="status-text">Checking…</span>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('kv')">Key-Value Store</button>
+  <button class="tab-btn" onclick="switchTab('slo')">SLO Dashboard</button>
+  <button class="tab-btn" onclick="switchTab('stats')">Redis Stats</button>
+</div>
+
+<main>
+
+  <!-- ═══════════════════════════ KV TAB ═══════════════════════════ -->
+  <div id="tab-kv" class="tab-panel active">
+
+    <div class="card">
+      <h2>Set Key</h2>
+      <div class="form-row">
+        <input id="inp-key"   type="text"   placeholder="key" />
+        <input id="inp-value" type="text"   placeholder="value" />
+        <input id="inp-ttl"   type="number" placeholder="TTL (s)" min="1" />
+        <button class="btn btn-primary" onclick="setKey()">Set</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center">
+        Stored Keys
+        <button class="btn btn-danger btn-sm" onclick="flushKeys()">Flush All</button>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Value</th>
+              <th>TTL</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="kv-table-body">
+            <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════ SLO TAB ═══════════════════════════ -->
+  <div id="tab-slo" class="tab-panel">
+
+    <div class="card">
+      <h2>Current SLI / SLO Status <span style="font-size:.75rem;color:var(--muted);font-weight:400;text-transform:none">(live, auto-refresh 10 s)</span></h2>
+      <div class="slo-grid" id="slo-grid">
+        <div class="slo-card loading"><div class="slo-label">Availability</div><div class="slo-value">—</div><div class="slo-target">Target: ≥ 99.9%</div></div>
+        <div class="slo-card loading"><div class="slo-label">P95 Latency</div><div class="slo-value">—</div><div class="slo-target">Target: ≤ 200 ms</div></div>
+        <div class="slo-card loading"><div class="slo-label">P99 Latency</div><div class="slo-value">—</div><div class="slo-target">Target: ≤ 500 ms</div></div>
+        <div class="slo-card loading"><div class="slo-label">Error Rate</div><div class="slo-value">—</div><div class="slo-target">Target: ≤ 0.1%</div></div>
+        <div class="slo-card loading"><div class="slo-label">Throughput</div><div class="slo-value">—</div><div class="slo-target">Req / s (5 m avg)</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Request Latency Distribution</h2>
+      <div class="chart-container">
+        <canvas id="latency-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>SLO Simulation</h2>
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:16px">
+        Fire synthetic requests to burn error budget and observe SLO degradation in real-time.
+      </p>
+      <div class="sim-row">
+        <label>Error rate</label>
+        <input type="range" id="err-rate" min="0" max="1" step="0.05" value="0.5" oninput="document.getElementById('err-rate-val').textContent=(+this.value*100).toFixed(0)+'%'">
+        <span id="err-rate-val">50%</span>
+        <button class="btn btn-danger btn-sm" onclick="fireSim('error')">Fire Errors</button>
+      </div>
+      <div class="sim-row">
+        <label>Slow delay (s)</label>
+        <input type="range" id="slow-delay" min="0.1" max="5" step="0.1" value="1" oninput="document.getElementById('slow-val').textContent=(+this.value).toFixed(1)+'s'">
+        <span id="slow-val">1.0s</span>
+        <button class="btn btn-muted btn-sm" onclick="fireSim('slow')">Fire Slow</button>
+      </div>
+      <div class="sim-row">
+        <label>Burst count</label>
+        <input type="range" id="burst-count" min="1" max="50" step="1" value="10" oninput="document.getElementById('burst-val').textContent=this.value">
+        <span id="burst-val">10</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════ STATS TAB ═══════════════════════════ -->
+  <div id="tab-stats" class="tab-panel">
+
+    <div class="card">
+      <h2>Redis Server Info</h2>
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-item"><div class="stat-label">Status</div><div class="stat-value" id="st-status">—</div></div>
+        <div class="stat-item"><div class="stat-label">Version</div><div class="stat-value" id="st-version">—</div></div>
+        <div class="stat-item"><div class="stat-label">Keys</div><div class="stat-value" id="st-keys">—</div></div>
+        <div class="stat-item"><div class="stat-label">Memory</div><div class="stat-value" id="st-memory">—</div></div>
+        <div class="stat-item"><div class="stat-label">Commands</div><div class="stat-value" id="st-cmds">—</div></div>
+        <div class="stat-item"><div class="stat-label">KS Hits</div><div class="stat-value" id="st-hits">—</div></div>
+        <div class="stat-item"><div class="stat-label">KS Misses</div><div class="stat-value" id="st-misses">—</div></div>
+        <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value" id="st-uptime">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Hit Rate</h2>
+      <div class="chart-container" style="height:180px">
+        <canvas id="hit-chart"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<script>
+// ─────────────────────────────────────────────
+// Utils
+// ─────────────────────────────────────────────
+const API = '';
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res;
+}
+
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function fmtUptime(s) {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+}
+
+// ─────────────────────────────────────────────
+// Tabs
+// ─────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  event.currentTarget.classList.add('active');
+}
+
+// ─────────────────────────────────────────────
+// Health check
+// ─────────────────────────────────────────────
+async function checkHealth() {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  try {
+    const res = await apiFetch('/health');
+    const data = await res.json();
+    if (data.status === 'healthy') {
+      dot.className = 'ok'; text.textContent = 'Healthy — Redis connected';
+    } else {
+      dot.className = 'warn'; text.textContent = 'Degraded — Redis disconnected';
+    }
+  } catch {
+    dot.className = 'error'; text.textContent = 'Backend unreachable';
+  }
+}
+
+// ─────────────────────────────────────────────
+// KV Store
+// ─────────────────────────────────────────────
+async function loadKeys() {
+  try {
+    const res  = await apiFetch('/api/keys');
+    const data = await res.json();
+    renderKeys(data.keys);
+  } catch (e) {
+    document.getElementById('kv-table-body').innerHTML =
+      `<tr><td colspan="4" class="empty-state">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderKeys(keys) {
+  const tbody = document.getElementById('kv-table-body');
+  if (!keys.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No keys stored yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = keys.map(k => `
+    <tr>
+      <td><code style="color:var(--accent2)">${esc(k.key)}</code></td>
+      <td>${esc(k.value)}</td>
+      <td>${k.ttl ? `<span class="badge badge-ttl">${k.ttl}s</span>` : '<span class="badge badge-none">∞</span>'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteKey('${esc(k.key)}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function setKey() {
+  const key   = document.getElementById('inp-key').value.trim();
+  const value = document.getElementById('inp-value').value.trim();
+  const ttl   = parseInt(document.getElementById('inp-ttl').value) || null;
+  if (!key || !value) { toast('Key and value are required', 'error'); return; }
+  try {
+    await apiFetch('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value, ttl }),
+    });
+    document.getElementById('inp-key').value = '';
+    document.getElementById('inp-value').value = '';
+    document.getElementById('inp-ttl').value = '';
+    toast(`Key "${key}" set`);
+    loadKeys();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteKey(key) {
+  try {
+    await apiFetch(`/api/keys/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    toast(`Key "${key}" deleted`);
+    loadKeys();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function flushKeys() {
+  if (!confirm('Delete ALL keys?')) return;
+  try {
+    await apiFetch('/api/keys', { method: 'DELETE' });
+    toast('All keys flushed');
+    loadKeys();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ─────────────────────────────────────────────
+// Prometheus metrics parser
+// ─────────────────────────────────────────────
+async function fetchMetrics() {
+  const res = await fetch('/metrics');
+  return res.text();
+}
+
+function parseMetrics(text) {
+  const values = {};
+  for (const line of text.split('\n')) {
+    if (line.startsWith('#')) continue;
+    const m = line.match(/^(\S+)\{([^}]*)\}\s+([\d.e+\-NaInf]+)/);
+    if (m) {
+      const key = m[1] + '{' + m[2] + '}';
+      values[key] = parseFloat(m[3]);
+      // also store by metric name + labels obj
+      if (!values[m[1]]) values[m[1]] = {};
+      const labels = {};
+      m[2].split(',').forEach(pair => {
+        const [k, v] = pair.split('=');
+        if (k) labels[k.trim()] = (v||'').replace(/"/g, '');
+      });
+      values[`__raw_${m[1]}`] = values[`__raw_${m[1]}`] || [];
+      values[`__raw_${m[1]}`].push({ labels, value: parseFloat(m[3]) });
+    } else {
+      const m2 = line.match(/^(\S+)\s+([\d.e+\-NaInf]+)/);
+      if (m2) values[m2[1]] = parseFloat(m2[2]);
+    }
+  }
+  return values;
+}
+
+function getHistogramBuckets(raw, metricName, filterFn) {
+  if (!raw[`__raw_${metricName}`]) return null;
+  const rows = raw[`__raw_${metricName}`].filter(r => r.labels.le && (!filterFn || filterFn(r.labels)));
+  const sorted = rows.sort((a, b) => {
+    const av = a.labels.le === '+Inf' ? Infinity : parseFloat(a.labels.le);
+    const bv = b.labels.le === '+Inf' ? Infinity : parseFloat(b.labels.le);
+    return av - bv;
+  });
+  return sorted;
+}
+
+function estimatePercentile(buckets, p) {
+  if (!buckets || !buckets.length) return null;
+  const total = buckets.find(b => b.labels.le === '+Inf');
+  if (!total || !total.value) return null;
+  const target = total.value * p;
+  for (let i = 0; i < buckets.length; i++) {
+    if (buckets[i].value >= target) {
+      const leLow  = i === 0 ? 0 : parseFloat(buckets[i-1].labels.le);
+      const leHigh = parseFloat(buckets[i].labels.le);
+      const cntLow  = i === 0 ? 0 : buckets[i-1].value;
+      const cntHigh = buckets[i].value;
+      if (cntHigh === cntLow) return leHigh;
+      return leLow + (leHigh - leLow) * (target - cntLow) / (cntHigh - cntLow);
+    }
+  }
+  return parseFloat(buckets[buckets.length - 1].labels.le);
+}
+
+// ─────────────────────────────────────────────
+// SLO Dashboard
+// ─────────────────────────────────────────────
+const SLO = {
+  availability: 99.9,   // %
+  p95ms:        200,    // ms
+  p99ms:        500,    // ms
+  errorRate:    0.1,    // %
+};
+
+let latencyChart = null;
+
+async function updateSLO() {
+  let raw;
+  try {
+    const text = await fetchMetrics();
+    raw = parseMetrics(text);
+  } catch { return; }
+
+  // ── Totals ──
+  const allRows  = raw['__raw_http_requests_total'] || [];
+  const total    = allRows.reduce((s, r) => s + r.value, 0);
+  const errors   = allRows.filter(r => parseInt(r.labels.status_code) >= 500)
+                          .reduce((s, r) => s + r.value, 0);
+  const success  = total - errors;
+  const avail    = total > 0 ? (success / total) * 100 : 100;
+  const errRate  = total > 0 ? (errors / total) * 100 : 0;
+
+  // ── Latency ──
+  const buckets   = getHistogramBuckets(raw, 'http_request_duration_seconds',
+                      l => l.method && l.endpoint !== '/simulate');
+  const p95 = estimatePercentile(buckets, 0.95);
+  const p99 = estimatePercentile(buckets, 0.99);
+
+  // ── Throughput (total / uptime proxy, approximate) ──
+  const throughput = raw['redis_keys_total'] !== undefined
+    ? (total / Math.max(raw['app_uptime_seconds'] || 60, 1)).toFixed(2)
+    : '—';
+
+  // ── Render cards ──
+  const grid = document.getElementById('slo-grid');
+  grid.innerHTML = [
+    sloCard('Availability',  `${avail.toFixed(2)}%`,  `Target: ≥ ${SLO.availability}%`,   avail >= SLO.availability ? 'ok' : 'error',    ((avail - 99) / (SLO.availability - 99)).toFixed(2)),
+    sloCard('P95 Latency',   p95 ? `${(p95*1000).toFixed(0)} ms` : '—', `Target: ≤ ${SLO.p95ms} ms`, p95 === null ? 'loading' : (p95*1000) <= SLO.p95ms ? 'ok' : 'error', p95 ? Math.min(1, SLO.p95ms/(p95*1000)).toFixed(2) : 1),
+    sloCard('P99 Latency',   p99 ? `${(p99*1000).toFixed(0)} ms` : '—', `Target: ≤ ${SLO.p99ms} ms`, p99 === null ? 'loading' : (p99*1000) <= SLO.p99ms ? 'ok' : 'error', p99 ? Math.min(1, SLO.p99ms/(p99*1000)).toFixed(2) : 1),
+    sloCard('Error Rate',    `${errRate.toFixed(2)}%`, `Target: ≤ ${SLO.errorRate}%`,      errRate <= SLO.errorRate ? 'ok' : 'error',     Math.max(0, 1 - errRate / SLO.errorRate).toFixed(2)),
+    sloCard('Throughput',    `${total} req`,           'Total requests observed',           'ok',                                           1),
+  ].join('');
+
+  // ── Latency chart ──
+  const labels = ['5ms','10ms','25ms','50ms','100ms','200ms','500ms','1s','2.5s','5s'];
+  const counts = [];
+  if (buckets && buckets.length) {
+    for (let i = 0; i < buckets.length - 1; i++) {
+      counts.push(Math.max(0, buckets[i].value - (i > 0 ? buckets[i-1].value : 0)));
+    }
+  }
+
+  const ctx = document.getElementById('latency-chart').getContext('2d');
+  if (latencyChart) {
+    latencyChart.data.datasets[0].data = counts;
+    latencyChart.update('none');
+  } else {
+    latencyChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels.slice(0, counts.length),
+        datasets: [{
+          label: 'Request count per bucket',
+          data: counts,
+          backgroundColor: '#6c8ef780',
+          borderColor: '#6c8ef7',
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#94a3b8', font: { size: 12 } } } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: '#2e3350' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: '#2e3350' } },
+        },
+      },
+    });
+  }
+}
+
+function sloCard(label, value, target, state, budgetRatio) {
+  const pct   = Math.max(0, Math.min(1, parseFloat(budgetRatio) || 0));
+  const pctPx = (pct * 100).toFixed(0);
+  return `
+  <div class="slo-card ${state}">
+    <div class="slo-label">${label}</div>
+    <div class="slo-value">${value}</div>
+    <div class="slo-target">${target}</div>
+    <div class="budget-bar-wrap">
+      <div class="budget-bar-track">
+        <div class="budget-bar-fill ${state}" style="width:${pctPx}%"></div>
+      </div>
+    </div>
+    <div class="slo-budget">Budget remaining: <span>${pctPx}%</span></div>
+  </div>`;
+}
+
+// ─────────────────────────────────────────────
+// Simulation
+// ─────────────────────────────────────────────
+async function fireSim(type) {
+  const count = parseInt(document.getElementById('burst-count').value) || 10;
+  const promises = [];
+  for (let i = 0; i < count; i++) {
+    if (type === 'error') {
+      const rate = parseFloat(document.getElementById('err-rate').value);
+      promises.push(fetch(`/api/simulate/error?rate=${rate}`).catch(() => {}));
+    } else {
+      const delay = parseFloat(document.getElementById('slow-delay').value);
+      promises.push(fetch(`/api/simulate/slow?delay=${delay}`).catch(() => {}));
+    }
+  }
+  toast(`Fired ${count} ${type} requests`);
+  await Promise.allSettled(promises);
+  updateSLO();
+}
+
+// ─────────────────────────────────────────────
+// Redis Stats
+// ─────────────────────────────────────────────
+let hitChart = null;
+
+async function loadStats() {
+  try {
+    const res  = await apiFetch('/api/stats');
+    const data = await res.json();
+    document.getElementById('st-status').textContent  = 'Connected';
+    document.getElementById('st-status').style.color  = 'var(--green)';
+    document.getElementById('st-version').textContent = data.redis_version || '—';
+    document.getElementById('st-memory').textContent  = data.used_memory_human || '—';
+    document.getElementById('st-cmds').textContent    = (data.total_commands_processed || 0).toLocaleString();
+    document.getElementById('st-hits').textContent    = (data.keyspace_hits || 0).toLocaleString();
+    document.getElementById('st-misses').textContent  = (data.keyspace_misses || 0).toLocaleString();
+    document.getElementById('st-uptime').textContent  = fmtUptime(data.uptime_in_seconds || 0);
+
+    // Fetch keys count from metrics
+    try {
+      const text = await fetchMetrics();
+      const raw  = parseMetrics(text);
+      const kc   = raw['redis_keys_total'];
+      document.getElementById('st-keys').textContent = kc !== undefined ? kc : '—';
+    } catch { document.getElementById('st-keys').textContent = '—'; }
+
+    // Hit-rate doughnut
+    const hits   = data.keyspace_hits   || 0;
+    const misses = data.keyspace_misses || 0;
+    const ctx = document.getElementById('hit-chart').getContext('2d');
+    if (hitChart) {
+      hitChart.data.datasets[0].data = [hits, misses];
+      hitChart.update();
+    } else {
+      hitChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Hits', 'Misses'],
+          datasets: [{ data: [hits, misses], backgroundColor: ['#34d399', '#f87171'], borderWidth: 0 }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: '#94a3b8' } },
+            tooltip: { callbacks: { label: ctx => `${ctx.label}: ${ctx.raw.toLocaleString()}` } },
+          },
+        },
+      });
+    }
+  } catch (e) {
+    document.getElementById('st-status').textContent = 'Error';
+    document.getElementById('st-status').style.color = 'var(--red)';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Auto-refresh
+// ─────────────────────────────────────────────
+const REFRESH_MS = 10000;
+let nextRefresh = Date.now() + REFRESH_MS;
+
+function tick() {
+  const remaining = nextRefresh - Date.now();
+  const pct = Math.max(0, Math.min(100, ((REFRESH_MS - remaining) / REFRESH_MS) * 100));
+  document.getElementById('refresh-bar').style.width = pct + '%';
+}
+
+async function refresh() {
+  nextRefresh = Date.now() + REFRESH_MS;
+  checkHealth();
+  loadKeys();
+  updateSLO();
+  loadStats();
+}
+
+setInterval(tick, 100);
+setInterval(refresh, REFRESH_MS);
+refresh();
+</script>
+</body>
+</html>

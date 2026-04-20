@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sre-hello-world.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sre-hello-world.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.backend.env.ENVIRONMENT | quote }}
+  APP_VERSION: {{ .Values.backend.env.APP_VERSION | quote }}
+  REDIS_PORT: {{ .Values.redis.port | toString | quote }}
+  {{- if .Values.redis.sentinelHosts }}
+  REDIS_SENTINEL_HOSTS: {{ .Values.redis.sentinelHosts | quote }}
+  REDIS_SENTINEL_SERVICE: {{ .Values.redis.sentinelService | quote }}
+  {{- else }}
+  REDIS_HOST: {{ .Values.redis.host | quote }}
+  {{- end }}

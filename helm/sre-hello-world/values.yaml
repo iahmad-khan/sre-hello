@@ -1,0 +1,118 @@
+# ── Global ────────────────────────────────────────────────────────────────────
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+backend:
+  image:
+    repository: your-registry/sre-hello-world-backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  env:
+    ENVIRONMENT: production
+    APP_VERSION: "1.0.0"
+
+  # Probe tuning
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+frontend:
+  image:
+    repository: your-registry/sre-hello-world-frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  service:
+    type: ClusterIP
+    port: 80
+
+# ── Redis connection ──────────────────────────────────────────────────────────
+# When using Bitnami Redis with sentinel, set sentinelHosts.
+# When using direct connection, set host.
+redis:
+  # Sentinel HA (recommended for production)
+  sentinelHosts: "redis-node-0.redis-headless.redis.svc.cluster.local:26379,redis-node-1.redis-headless.redis.svc.cluster.local:26379,redis-node-2.redis-headless.redis.svc.cluster.local:26379"
+  sentinelService: mymaster
+
+  # Direct mode (set sentinelHosts to "" to use this)
+  host: ""
+  port: 6379
+
+  # Secret containing key "redis-password"
+  existingSecret: redis-secret
+  secretPasswordKey: redis-password
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  host: sre-hello-world.example.com
+  tls: []
+  # - secretName: sre-hello-world-tls
+  #   hosts:
+  #     - sre-hello-world.example.com
+
+# ── HPA ───────────────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ── Prometheus Operator integration ──────────────────────────────────────────
+serviceMonitor:
+  enabled: true
+  namespace: monitoring          # namespace where Prometheus operator watches
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels: {}           # add labels to match your Prometheus selector
+
+prometheusRule:
+  enabled: true
+  namespace: monitoring
+  additionalLabels: {}
+
+# ── SLO targets (used in PrometheusRule) ─────────────────────────────────────
+slo:
+  availability:
+    target: "0.999"      # 99.9%
+  latency:
+    p95TargetSeconds: "0.2"   # 200 ms
+    p99TargetSeconds: "0.5"   # 500 ms
+  errorRate:
+    target: "0.001"      # 0.1%
